@@ -1,0 +1,63 @@
+name: Fetch CF Data (60s loop)
+
+# Runs run_loop.py (polls Codeforces every 60s) inside a single Actions job for
+# ~65 minutes, then exits cleanly. A fresh run starts every hour, so the loop
+# is effectively continuous (each run overlaps the next by ~5 min) with no
+# laptop. If one run crashes, the next hourly start bounds the gap to <= 1h.
+#
+# This is the primary fetcher. fetch.yml (one-shot, 5-min cron) is kept as a
+# manual fallback only, to avoid double-writing while this loop runs.
+
+on:
+  schedule:
+    - cron: "0 * * * *"     # top of every hour
+  workflow_dispatch:
+
+# Allow overlap between the outgoing and incoming hourly runs (no cancel), so
+# there is no coverage gap at the handover.
+concurrency:
+  group: fetch-loop
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70  # > the 65-min inner cap below, so we exit cleanly
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: fetcher
+        run: pip install -r requirements.txt
+
+      - name: Create handles.txt
+        working-directory: fetcher
+        run: |
+          cat > handles.txt << 'EOF'
+          # Kept minimal so the board is not polluted with unrelated public
+          # contests; the orientation contest is pulled via contests.txt.
+          gwasafaewf3552
+          EOF
+
+      - name: Create contests.txt
+        working-directory: fetcher
+        run: |
+          cat > contests.txt << 'EOF'
+          714608
+          EOF
+
+      - name: Run 60s loop for ~65 min
+        working-directory: fetcher
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_API_SECRET: ${{ secrets.CF_API_SECRET }}
+          PYTHONUNBUFFERED: "1"
+        # timeout exits 124 when the cap is hit; treat that as success.
+        run: timeout 65m python run_loop.py || [ $? -eq 124 ]
